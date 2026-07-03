@@ -279,6 +279,15 @@ class Handler(BaseHTTPRequestHandler):
                 "message": "DIFY_API_KEY 未配置，请在启动网关前设置环境变量",
             })
             return
+        try:
+            DIFY_API_KEY.encode("ascii")
+        except UnicodeEncodeError:
+            self.send_json(500, {
+                "ok": False,
+                "message": "DIFY_API_KEY 不能包含中文。请把“你的Dify应用APIKey”替换成 Dify 里真实的 App API Key，通常以 app- 开头。",
+                "example": "set DIFY_API_KEY=app-xxxxxxxxxxxxxxxx",
+            })
+            return
 
         try:
             data = read_json_body(self)
