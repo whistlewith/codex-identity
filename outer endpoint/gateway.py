@@ -24,6 +24,29 @@ DINGTALK_USER_MAP = {
     "ding-user-002": "E10002",
 }
 
+EMPLOYEE_PROFILE_MAP = {
+    "E10001": {
+        "employee_id": "emp-10001",
+        "employee_name": "张三",
+        "site_id": "site-shanghai-hq",
+        "site_lat": "31.2304",
+        "site_lng": "121.4737",
+        "radius_m": 1000,
+    },
+    "E10002": {
+        "employee_id": "emp-10002",
+        "employee_name": "李四",
+        "site_id": "site-shanghai-hq",
+        "site_lat": "31.2304",
+        "site_lng": "121.4737",
+        "radius_m": 1000,
+    },
+}
+
+ATTENDANCE_RECORDS = []
+AUDIT_LOGS = []
+ATTENDANCE_LOCK = threading.Lock()
+
 
 def now_iso():
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
@@ -235,6 +258,18 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_dingtalk_checkin()
             return
 
+        if parsed.path == "/api/attendance/verify":
+            self.handle_attendance_verify()
+            return
+
+        if parsed.path == "/api/attendance/audit-log":
+            self.handle_attendance_audit_log()
+            return
+
+        if parsed.path == "/api/attendance/check-in":
+            self.handle_attendance_check_in()
+            return
+
         self.send_json(404, {"ok": False, "message": "not found"})
 
     def handle_dingtalk_checkin(self):
@@ -355,6 +390,116 @@ class Handler(BaseHTTPRequestHandler):
             "external_request_id": context["external_request_id"],
             "auth_token": context["auth_token"],
             "expires_at": context["expires_at"],
+        })
+
+    def handle_attendance_verify(self):
+        try:
+            data = read_json_body(self)
+        except Exception as exc:
+            self.send_json(400, {"ok": False, "message": "请求 JSON 无效", "error": str(exc)})
+            return
+
+        auth_context_id = str(data.get("auth_context_id", "")).strip()
+        if not auth_context_id:
+            self.send_json(400, {
+                "ok": False,
+                "reason_code": "MISSING_AUTH_CONTEXT",
+                "message": "缺少 auth_context_id",
+            })
+            return
+
+        context = get_auth_context(auth_context_id)
+        if not context:
+            self.send_json(401, {
+                "ok": False,
+                "reason_code": "INVALID_AUTH_CONTEXT",
+                "message": "auth_context_id 无效或已过期",
+            })
+            return
+
+        employee_no = str(data.get("employee_no") or context["employee_no"])
+        if employee_no != context["employee_no"]:
+            self.send_json(403, {
+                "ok": False,
+                "reason_code": "EMPLOYEE_CONTEXT_MISMATCH",
+                "message": "employee_no 与 auth_context_id 不匹配",
+            })
+            return
+
+        profile = EMPLOYEE_PROFILE_MAP.get(employee_no)
+        if not profile:
+            self.send_json(403, {
+                "ok": False,
+                "reason_code": "EMPLOYEE_NOT_FOUND",
+                "message": "员工不存在或未绑定打卡站点",
+            })
+            return
+
+        # 这里已经拿到了真实 token。演示版只校验它存在，不把它返回给 Dify。
+        auth_token = context["auth_token"]
+        if not auth_token:
+            self.send_json(401, {
+                "ok": False,
+                "reason_code": "MISSING_AUTH_TOKEN",
+                "message": "隐藏上下文中没有 auth token",
+            })
+            return
+
+        self.send_json(200, {
+            "ok": True,
+            "message": "员工身份校验通过",
+            "employee_id": profile["employee_id"],
+            "employee_name": profile["employee_name"],
+            "site_id": profile["site_id"],
+            "site_lat": profile["site_lat"],
+            "site_lng": profile["site_lng"],
+            "radius_m": profile["radius_m"],
+            "server_ts": now_iso(),
+            "last_checkin_ts": "",
+            "last_lat": "",
+            "last_lng": "",
+            "last_location_ts": "",
+        })
+
+    def handle_attendance_audit_log(self):
+        try:
+            data = read_json_body(self)
+        except Exception as exc:
+            self.send_json(400, {"ok": False, "message": "请求 JSON 无效", "error": str(exc)})
+            return
+
+        with ATTENDANCE_LOCK:
+            AUDIT_LOGS.append({
+                "id": f"audit-{len(AUDIT_LOGS) + 1}",
+                "created_at": now_iso(),
+                "payload": data,
+            })
+
+        self.send_json(200, {
+            "ok": True,
+            "message": "审计记录已写入演示内存",
+        })
+
+    def handle_attendance_check_in(self):
+        try:
+            data = read_json_body(self)
+        except Exception as exc:
+            self.send_json(400, {"ok": False, "message": "请求 JSON 无效", "error": str(exc)})
+            return
+
+        with ATTENDANCE_LOCK:
+            record_id = f"checkin-{len(ATTENDANCE_RECORDS) + 1}"
+            ATTENDANCE_RECORDS.append({
+                "id": record_id,
+                "created_at": now_iso(),
+                "payload": data,
+            })
+
+        self.send_json(200, {
+            "ok": True,
+            "message": "打卡记录已创建",
+            "record_id": record_id,
+            "server_ts": now_iso(),
         })
 
     def send_json(self, status, payload):
